@@ -1,0 +1,240 @@
+#!/usr/bin/perl -w
+# This script will show you the events which are saved in zabbix database
+# You need configure your database parameters at the first sentences
+# of the script ($host,$port,$database,$username,$password).
+# 
+# When you configure the script, you may run it with parameter --help to 
+# see parameters
+# 
+# Please note that I'm using a heuristic to know which host / ip is affected
+# in the event. I didn't have enough time to study php code in zabbix distrib
+# The first function used in the trigger  (another assumption (for me 
+# object == trigger)) will have a item which is allocated inside the host.
+# Please if you know a better way to go, mail me.
+# 
+# Author: i5513 <javibarroso at gmail dot com> 
+# (contact with me if you have new ideas, detected bugs or what you want)
+# 
+# Changelog
+# First Public Release to the world on 5 April 2012
+# Please see logs in github (https://github.com/i5513/zabbix-scripts)
+# 
+# License
+# What you want (GPL, BSD, ...) , always that author line is kept in 
+# this header
+#
+# PD: I'm not a license expert, so I cannot chose any concrete, again if you 
+# know a good license like WTFPL but without fuck word inside which maintain
+# name of author like uniq constrainst, tell me!
+use strict;
+use Data::Dumper;
+use POSIX qw(strftime);
+use Cwd 'abs_path';
+
+use DBI;
+
+# Configure for your zabbix instance
+my ($host,$port,$database)=("address","3306","zabbix");
+my ($username,$password)=("username","password");
+
+if ($host eq "address")
+{
+	system ("sed -n '2,7p' ".abs_path($0));
+	exit 1;
+}
+my $dsn = "DBI:mysql:database=zabbix2;host=$host;port=$port";
+my $dbh = DBI->connect ($dsn, $database, $password);
+
+my $debug=0;
+
+use Getopt::Long;
+
+my ($start,$end,$opt_ip,$opt_host,$opt_desc,$opt_value,$opt_help,
+       $grep_desc,$grep_host,$grep_ip);
+
+Getopt::Long::Configure ("bundling");
+my $res_opt=GetOptions ("start|s=s" => \$start,
+                       "end|e=s" => \$end,
+                       "desc|d=s" => \$grep_desc,
+                       "host|h=s" => \$grep_host,
+                       "ip|i=s" => \$grep_ip,
+                       "I" => \$opt_ip,
+                       "H" => \$opt_host,
+                       "D" => \$opt_desc,
+                       "V" => \$opt_value,
+                       "help" => \$opt_help);
+
+if (defined $opt_help)
+{
+       print <<EOH;
+Sypnosis: $0 [options]
+       Options:
+        -s "start date"	: use string like in date -d command
+        -e "end date"	: use string like in date -d command
+        -d "desc"	: Only show events which trigger description match with desc
+        -i IP		: Only show events originated from IP
+        -h HOST		: Only show events originated from HOST
+	-I		: Show ip 
+	-H		: Show host 
+	-D		: Show description 
+	-V		: Show value 
+        --help          : Show this help
+EOH
+exit 0;
+}
+
+if (not defined $opt_ip and not defined $opt_host and
+       not defined $opt_desc and not defined $opt_desc and
+       not defined $opt_value)
+{
+       $opt_ip=$opt_host=$opt_desc=$opt_value=1;
+}
+
+# From $start seconds to $end seconds ... :
+if (not defined ($start))
+{
+       $start="1 hour ago";
+       $start=`date -d "$start" +'%s'`;
+}
+else
+{
+       $start=`date -d "$start" +'%s'`;
+}
+if (not defined ($end))
+{
+       $end=`date +'%s'`;
+}
+else
+{
+       $end=`date -d "$end" +'%s'`;
+}
+
+chomp $start;
+chomp $end;
+
+printf "START: $start, end $end\n" if ($debug != 0);
+
+my %events;
+my %objects;
+my $select= "select eventid,objectid,clock,value from events where
+clock > $start and clock < $end";
+my $sth = $dbh->prepare ("$select");
+$sth->execute;
+while (my $ref = $sth->fetchrow_hashref())
+{
+       $objects{$ref->{'objectid'}}=1;
+       $events{eventid}{$ref->{'eventid'}}{clock}=$ref->{'clock'};
+       $events{eventid}{$ref->{'eventid'}}{objectid}=$ref->{'objectid'};
+       $events{eventid}{$ref->{'eventid'}}{value}=$ref->{'value'};
+}
+
+my %triggers;
+my %expressions;
+# Cacheamos
+foreach my $objectid (keys %objects)
+{
+       #$sth=$dbh->prepare ("select h.host, t.description from triggers t,
+items i, functions f, hosts h
+       #       where i.itemid=f.itemid and f.triggerid=$objectid and h.hostid = i.hostid");
+       $sth=$dbh->prepare ("select description,expression from triggers
+where triggerid=$objectid");
+       $sth->execute;
+
+       while (my $ref = $sth->fetchrow_hashref())
+       {
+               $triggers{$objectid}{desc}=$ref->{'description'};
+               $triggers{$objectid}{expression}=$ref->{'expression'};
+               $expressions{$ref->{'expression'}}=$objectid;
+       }
+}
+
+my %functions;
+
+foreach my $expression (keys %expressions)
+{
+       if ($expression =~ /\{(\d+)\}/)
+       {
+               $functions{$expression}=$1;
+               $triggers{$expressions{$expression}}{function}=$1;
+       }
+}
+
+my %items;
+foreach my $expression (keys %functions)
+{
+       $sth=$dbh->prepare ("select itemid from functions where functionid =
+'$functions{$expression}'");
+       $sth->execute;
+       while (my $ref = $sth->fetchrow_hashref())
+       {
+               $items{$ref->{itemid}}=1;
+               $triggers{$expressions{$expression}}{item}=$ref->{'itemid'};
+       }
+}
+
+my %hosts_ids;
+foreach my $item (keys %items)
+{
+       $sth=$dbh->prepare ("select hostid from items where itemid=$item");
+       $sth->execute;
+       while (my $ref = $sth -> fetchrow_hashref ())
+       {
+               if (not defined $ref->{'hostid'})
+               {
+                       $hosts_ids{$item}=undef;
+               }
+               else
+               {
+                       $hosts_ids{$item}=$ref->{'hostid'};
+               }
+       }
+}
+
+my %info;
+foreach my $hostid (values %hosts_ids)
+{
+       $sth=$dbh->prepare ("select ip, host from hosts where hostid=$hostid");
+       $sth->execute;
+       while (my $ref = $sth -> fetchrow_hashref ())
+       {
+               $info{$hostid}{ip}=$ref->{'ip'};
+               $info{$hostid}{host}=$ref->{'host'};
+       }
+}
+my @expressions=keys %triggers;
+foreach my $expression (@expressions)
+{
+       my $item=$triggers{$expression}{item};
+       my $hostid=$hosts_ids{$item};
+       if (not defined $info{$hostid})
+       {
+               printf "Problemas con $item\n";
+       }
+       else
+       {
+               $triggers{$expression}{host}=$info{$hostid}{host};
+               $triggers{$expression}{ip}=$info{$hostid}{ip};
+       }
+}
+
+
+foreach my $eventid (sort { $events{eventid}{$a}{clock} <=>
+$events{eventid}{$b}{clock} }keys %{$events{eventid}})
+{
+       my $fecha=strftime ("%Y-%m-%d %H:%M:%S", localtime
+$events{eventid}{$eventid}{clock});
+       my $desc=$triggers{$events{eventid}{$eventid}{objectid}}{desc};
+       my $ip=$triggers{$events{eventid}{$eventid}{objectid}}{ip};
+       my $host=$triggers{$events{eventid}{$eventid}{objectid}}{host};
+       my $value=$events{eventid}{$eventid}{value};
+       my $output="$fecha - ";
+       $output .= "\t".$ip if (defined $opt_ip);
+       $output .= "\t".$host if (defined $opt_host);
+       $output .= "\t".$desc if (defined $opt_desc);
+       $output .= "\t".$value if (defined $opt_value);
+       next if (defined $grep_desc and $desc !~ /$grep_desc/);
+       next if (defined $grep_host and $host ne $grep_host);
+       next if (defined $grep_ip and $ip ne $grep_ip);
+       $output =~ s/\t//;
+       print "$output\n";
+}
