@@ -42,7 +42,7 @@ if ($host eq "address")
 	system ("sed -n '2,7p' ".abs_path($0));
 	exit 1;
 }
-my $dsn = "DBI:mysql:database=zabbix2;host=$host;port=$port";
+my $dsn = "DBI:mysql:database=$database;host=$host;port=$port";
 my $dbh = DBI->connect ($dsn, $database, $password);
 
 my $debug=0;
