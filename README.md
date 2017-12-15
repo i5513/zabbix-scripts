@@ -11,17 +11,19 @@ user=user
 password=password
 server=ip_or_name
 ## Parameters
-Python script which take 3 parameter (item, value and template), optionally a config file.
+Python script which take 3 parameter (*item*, *value* and *template*), optionally a config file.
 
 
 ## Use
-Having a host with a template applied, and with an item which tell us if the host is in active mode or pasive mode, this script will enable or disable all the items belong to the template when the item have the value passed by parameter. It will never disable the item which say if the host is master or slave.
+Having any host with the template applied, and with an item which tell us if the host is in active mode or pasive mode, this script will enable or disable all the items belong to the template when the item have the value passed by parameter. It will never disable the item which say if the host is master or slave.
+Note that the value is the value of the item when the host is in active mode
 
 ## Example
 We are using it on production, for monitoring ActiveMQ (I will publish zabbix template (for the moment in spanish)):
+```
 python /opt/scripts/zabbix_monit_active_pasive \
 	--item-key 'jmx["org.apache.activemq:type=Broker,brokerName={$BROKER}",Slave]' \
 	--value false \
 	--template Plantilla_ActiveMQ_MasterSlave \
 	>> /var/log/zabbix/activemq.log 2>&1 
-
+```
