@@ -1,0 +1,116 @@
+#!/usr/bin/python
+# -- encoding: utf8 --
+
+
+import netsnmp
+import pprint
+import jinja2
+import argparse
+import re
+import sys
+import datetime
+import ConfigParser
+import os
+
+from zabbix_api import ZabbixAPI
+
+def get_items(zapi,args):
+	template=args.template[0]
+	item_key=args.item_key[0]
+	value=args.value[0]
+
+	items=zapi.item.get({ 
+			"output": [ "itemid", "lastvalue", "lastclock" , "delay"],
+			"monitored": True,
+			"inherited": True,
+			"search": {
+				"key_": item_key
+				},
+		});
+	return items
+
+def check_history(items, values):
+	itemids=map(lambda x: x.get("itemid"), items)
+	items=map (lambda x: x.get("itemid"), values)
+	for i in itemids:
+		if i not in items:
+			print "ERROR: No se encuentra historia para item "+i
+
+def enable_or_disable_items(zapi, items, args):
+	for i in items:
+		recently=int(datetime.date.strftime(datetime.datetime.now(),"%s"))-int(i.get("delay"))
+		if i.get("lastvalue") == args.value[0] and int(i.get("lastclock")) > recently:
+			change_items_status(zapi, i.get("itemid"), args, 0)
+		else:
+			change_items_status(zapi, i.get("itemid"), args, 1)
+
+def change_items_status(zapi, itemid, args, status):
+	host=zapi.host.get({"itemids": itemid})
+	if len(host) != 1:
+		print "Algo falla más de un host para el mismo item (itemid: "+itemid+")"
+		exit (1)
+	host=host[0]
+	template=zapi.template.get({"filter":{ "host": args.template}})
+	if (len(template) != 1):
+		print "No encontramos plantilla "+args.template
+		print "Salimos"
+		exit(1)
+	template=template[0]
+	items=zapi.item.get({
+			"output": ["itemid"],
+			"templateids": template.get("templateid"), 
+			"hostids": host.get("hostid"),
+			"inherited": True})
+	itemids=map(lambda x: x.get("itemid"), items)
+	itemids.remove(itemid)
+	update=map(lambda x: {"itemid": x, "status": status}, itemids)
+	zapi.item.update(update)
+
+def init_args():
+	parser = argparse.ArgumentParser(
+		description='Activa o desactiva los items de una plantilla según el valor de uno de sus items (exceptuando éste mismo)')
+	entorno_arg = parser.add_mutually_exclusive_group()
+	entorno_arg.add_argument('--pre', action="store_true",
+			   help='Especifica entorno preproduccion')
+	entorno_arg.add_argument('--pro', action="store_true",
+			   help='Especifica entorno proproduccion')
+	parser.add_argument('--item-key', action="store", required=True, nargs=1,
+			   help='Especifica la key del item que activa o desactiva el resto de items')
+	parser.add_argument('--value', action="store", required=True, nargs=1,
+			   help='Especifica el valor que debe de tener el item para activar el resto de items')
+	parser.add_argument('--template', action="store", required=True, nargs=1,
+			   help='Especifica la plantilla sobre la que activar / desactivar los items')
+	parser.add_argument('--history', action="store", nargs="?", default="4",
+			   help='Especifica la plantilla sobre la que activar / desactivar los items')
+	parser.add_argument('--config', action="store", nargs=1,
+			   help='Especifica el fichero de configuración a utilizar')
+
+	args = parser.parse_args()
+	return args
+
+def login_zabbix(args):
+	config_files=['/etc/zabbix/zabbix_api.conf', os.path.expanduser('~/.zabbix_api.conf')]
+	if args.config:
+		config_files=config_files+[args.config[0]]
+	pprint.pprint(config_files)
+	config=ConfigParser.ConfigParser()
+	config.read(config_files)
+
+	zabbix_user = config.get('zabbixapi','user')
+	zabbix_password = config.get('zabbixapi','password')
+	zabbix_server = config.get('zabbixapi','server')
+	print zabbix_user+"!!!!"+zabbix_password+"!!!"+zabbix_server
+	exit(1)
+
+	zapi = ZabbixAPI(server="https://"+zabbix_server+"/zabbix/", \
+	            validate_certs = False, timeout = 120)
+	zapi.login(zabbix_user, zabbix_password) 
+
+
+	return zapi
+
+args=init_args()
+zapi=login_zabbix(args)
+items=get_items(zapi,args)
+enable_or_disable_items(zapi,items,args)
+exit(0)
